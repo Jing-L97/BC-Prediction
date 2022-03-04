@@ -34,7 +34,7 @@ def convert_time(start_candi,audio_length):
     end_lst.append(audio_length)
     return time_lst,end_lst
 
-# Version 1: For the starting point and text in the same line 
+# Version 1: For the starting point and text in different lines 
 def extract_time_v1(transcription):
     audio_name = transcription[:-4] + '.wav'  
     audio = AudioSegment.from_file(audio_name)
