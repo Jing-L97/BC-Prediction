@@ -18,9 +18,8 @@ import os.path as osp
 import requests
 from lxml import etree
 
-
-# segment audio file based on transcription(for improvement: https://github.com/MontrealCorpusTools/Montreal-Forced-Aligner/issues/326)
-# input: raw transcriptions with events(in the list form); output: a cleaned transcription with texts(in the list form)
+# Two different formats of timepoints
+# Format v1: timepoints are in different lines from content
 def read_transcription_one(transcription):
     original_txt = pd.read_csv(transcription,delimiter='(\:\s)|(\]\s)',header=None, on_bad_lines='skip')
     # remove unnecessary lines
@@ -41,6 +40,7 @@ def read_transcription_one(transcription):
         time_lst.append(millisecond)  
     return rename,time_lst
 
+# Format v2: timepoints are in different lines from content
 def read_transcription_two(transcription):
     original_txt = pd.read_csv(transcription,delimiter='\:\s',header=None, on_bad_lines='skip')
     # convert the index into column
@@ -60,6 +60,7 @@ def read_transcription_two(transcription):
         time_lst.append(millisecond)
     return nonempty,time_lst
 
+# append start and end timepoints to the dataframe
 def append_time(nonempty,audio_length,time_lst):
     # add startpoints to the whole dataframe
     speaker_lst = nonempty['Speaker'].to_list()
@@ -86,6 +87,7 @@ def append_time(nonempty,audio_length,time_lst):
         new = pd.concat([new, time_i])
     return new
 
+# remove event description in the transcription 
 def remove_event(raw,new):
     body_lst = []
     for i in raw: 
@@ -102,8 +104,7 @@ def remove_event(raw,new):
     new = new[new['Length'] != 0]
     return new
 
-# convert the hh:mm:ss time into miliseconds; generate the endtime based on the start of the next utterance
-# input: start time list;length of the  output: start time list; endtime list 
+ 
 def extract_time(transcription,version):
     # get audio length
     audio_name = transcription[:-4] + '.wav'  
@@ -144,6 +145,10 @@ def extract_time(transcription,version):
 
 
 # segment audios according to different speakers
+# segment audio file based on transcription
+# input: path of raw transcriptions and audios; 
+# output: a set of cleaned transcriptions and audios segmented on the utterance level 
+
 def segment_audio(path):
     # get the filename list
     # loop the input folder to get the filename
