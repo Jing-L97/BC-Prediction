@@ -17,6 +17,7 @@ import os
 import os.path as osp
 import requests
 from lxml import etree
+import textgrid
 
 # Two different formats of timepoints
 # Format v1: timepoints are in different lines from content
@@ -143,12 +144,6 @@ def extract_time(transcription,version):
     new = new.reindex(['Filename','Speaker','Text','Start','End','Length'], axis=1)
     return new
 
-
-# segment audios according to different speakers
-# segment audio file based on transcription
-# input: path of raw transcriptions and audios; 
-# output: a set of cleaned transcriptions and audios segmented on the utterance level 
-
 def segment_audio(path):
     # get the filename list
     # loop the input folder to get the filename
@@ -252,12 +247,90 @@ def perform_FA(outpath):
             print('{} [{}]: {} FAIL Alignment Request')
 
 
+# parse the textgrid to get the start and end points of each word
+def parse_Interval(IntervalObject):
+    start_time = ""
+    end_time = ""
+    P_name = ""
+    ind = 0
+    str_interval = str(IntervalObject)
+    # print(str_interval)
+    for ele in str_interval:
+        if ele == "(":
+            ind = 1
+        if ele == " " and ind == 1:
+            ind = 2
+        if ele == "," and ind == 2:
+            ind = 3
+        if ele == " " and ind == 3:
+            ind = 4
+
+        if ind == 1:
+            if ele != "(" and ele != ",":
+                start_time = start_time + ele
+        if ind == 2:
+            end_time = end_time + ele
+        if ind == 4:
+            if ele != " " and ele != ")":
+                P_name = P_name + ele
+
+    st = float(start_time)
+    et = float(end_time)
+    pn = P_name
+    return [pn,st,et]
+
+# get a list of all the phonemes
+def parse_textgrid(filename,layername):
+    tg = textgrid.TextGrid.fromFile(filename)
+    list_words = tg.getList(layername)
+    words_list = list_words[0]
+    final = pd.DataFrame()
+    for ele in words_list:
+        pho = parse_Interval(ele)
+        #target_lst.append(pho)
+        data = pd.DataFrame(pho).T
+        final = pd.concat([data,final])
+    # remove silence in the dataframe
+    final = final.rename({0: 'Word',1: 'Start',2: 'End'}, axis=1)
+    final['Length'] = final['End'] - final['Start']
+    final = final[final.Word != 'None']
+    utterance_candi = filename.split('.')
+    final['UtteranceName'] = utterance_candi[0]
+    speaker_candi = filename.split('_')
+    speaker = speaker_candi[1]
+    audioname = speaker_candi[-1]
+    name = audioname.split('.')
+    final['Speaker'] = speaker
+    final['Filename'] = name[0]
+    return final
+
+# read and parse textgrid files within the filepath
+# input: folder path containing all the textgrids
+# output: a dataframe comtaining word, start/end point, duration
+
+def get_duration(path,layername,transcription):    
+    folder = os.fsencode(path)
+    final = pd.DataFrame()
+    for file in os.listdir(folder):
+        filename = os.fsdecode(file)
+        data = parse_textgrid(filename,layername)        
+        # change the duration     
+        global_start = transcription.loc[transcription['UtteranceName'] == data['UtteranceName'].tolist()[0], 'Start'].tolist()[0]
+        renewed_start = data['Start'] + global_start
+        renewed_end = data['End'] + global_start
+        data['Global_start'] = renewed_start
+        data['Global_end'] = renewed_end
+        final = pd.concat([data,final])
+    final.to_csv('word.csv', index=False)    
+    return final
+
 
 def main():
     path = 'Path\\to\\your\\dataset'
-    segment_audio(path)
+    transcription = segment_audio(path)
     perform_FA(path)
-
+    get_duration(path,"ORT-MAU",transcription)
+    
 if __name__ == "__main__":
     main()
 
