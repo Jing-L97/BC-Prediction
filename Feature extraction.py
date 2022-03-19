@@ -16,8 +16,8 @@ import math
 import numpy as np
 from scipy.io import wavfile
 import noisereduce as nr
-from data_preparation import *
-
+#from data_preparation import *
+import spacy
 
 ##############
 #import files#
@@ -279,21 +279,88 @@ final_set_no.to_csv('final_set_no.csv',index=False)
 final_set_dur.to_csv('final_set_dur.csv',index=False) 
 
 
+#################
+#Verbal features#
+#################
+
+# POS tags
+def get_POS(transcription,language):
+    if language == 'English':
+        nlp = spacy.load("en_core_web_lg")
+        transcription = transcription[(transcription['Filename'] == 'CA-BO-IO') | (transcription['Filename'] == 'AA-BO-CM')]
+    elif language == 'French':
+        nlp = spacy.load("fr_core_news_lg")
+        transcription = transcription[(transcription['Filename'] != 'CA-BO-IO') & (transcription['Filename'] != 'AA-BO-CM')]
+    utt = transcription['Text'].tolist()
+    n = 0
+    info_utt = []
+    transcription = transcription.values.tolist()
+    transcription = pd.DataFrame(transcription, columns = ['index1','index2','Filename','UtteranceName','Speaker', 'Text','Start','End','Length'])
+    new = transcription[['Filename','UtteranceName','Speaker', 'Text','Start','End','Length']]
+    while n < len(utt): 
+        utt_name = new['UtteranceName'][n]
+        file_name = new['Filename'][n]
+        doc = nlp(utt[n])
+        for token in doc:
+            word = token.text
+            tag = token.pos_
+            info_utt.append([file_name,utt_name,word,tag])
+        n+=1
+    utt_frame = pd.DataFrame(info_utt, columns = ['Filename','UtteranceName','Word','POS'])
+    return utt_frame
 
 
+def append_POS(transcription,Words,language):
+    utt_frame = get_POS(transcription,language)      
+    if language == 'French':
+        Words = Words[(Words['Filename'] != 'CA-BO-IO') & (Words['Filename'] != 'AA-BO-CM')]
+    if language == 'English':
+        Words = Words[(Words['Filename'] == 'CA-BO-IO') | (Words['Filename'] == 'AA-BO-CM')]
+    utt_frame['standard'] = utt_frame['UtteranceName']+utt_frame['Word']
+    Words['standard'] = Words['UtteranceName']+Words['Word']  
+    utt_frame_lst = utt_frame['standard'].tolist()
+    # get the matching word from FA document
+    result = Words.loc[Words['standard'].isin(utt_frame_lst)] 
+    result1 = result[['Word', 'Start', 'End','Length','UtteranceName','Speaker', 
+                     'Filename','Global_start','Global_end','standard']].values.tolist()
+    # match the POS tags to the word dataframe
+    suspicious = []
+    POS_lst = []
+    final = pd.DataFrame()
+    n = 0
+    while n < len(result1):
+        utterance = result1[n][-1]
+        index = utt_frame_lst.index(utterance)
+        selected = utt_frame.iloc[[index]]
+        if selected.shape[0] > 1:
+            suspicious.append(selected)
+        else:  
+            # get POS list
+            final = pd.concat([selected,final])
+            new = selected.values.tolist()
+            POS = new[0][-2]
+            POS_lst.append(POS)
+        n+=1   
+    # append the POS column to the original dataset
+    result['POS'] = POS_lst
+    final = result[['Filename','UtteranceName','Speaker','Word','Start','End','Global_start','Global_end','Length','POS']]
+    return final
+
+Words = pd.read_csv('word.csv')
+transcription = pd.read_csv('transcription.csv')
+utt_frame = pd.read_csv('POS_candi.csv')
 
 
-
-
-
-
-
-
-
-
-
-
-
+result_eng = append_POS(transcription,Words,'English')
+result_eng.to_csv('result_eng.csv')
+result_fr = append_POS(transcription,Words,'French')
+result_eng = pd.read_csv('result_eng.csv')
+result_fr = pd.read_csv('result_fr.csv')
+final = pd.concat([result_fr,result_eng])
+final.to_csv('POS.csv')
+POS_lst = final['POS'].tolist()
+#get type of POS
+POS_type = list(dict.fromkeys(POS_lst))
 
 
 
