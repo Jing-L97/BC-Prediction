@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Extract vocal features and prepare other features for training
+Extract multimodal features for training
 
 @author: Jing Liu
 """
@@ -16,7 +16,6 @@ import math
 import numpy as np
 from scipy.io import wavfile
 import noisereduce as nr
-#from data_preparation import *
 import spacy
 
 ##############
@@ -24,9 +23,9 @@ import spacy
 ##############
 data = pd.read_csv('BC_oppor.csv')
 whole_data = pd.read_csv('AllData.csv')
-eGeMAPS_all = pd.read_csv('eGeMAPS_all_3.csv')
-visual_no_result= pd.read_csv('visual_no.csv') 
-visual_dur_result= pd.read_csv('visual_dur.csv') 
+# eGeMAPS_all = pd.read_csv('eGeMAPS_all_3.csv')
+# visual_no_result= pd.read_csv('visual_no.csv') 
+# visual_dur_result= pd.read_csv('visual_dur.csv') 
 
 # add the extracted features to the original dataset
 def add_features(data,features):
@@ -35,6 +34,17 @@ def add_features(data,features):
     new_set = pd.concat([data,features], axis=1)
     new_set.drop(['index'], axis=1)
     return new_set
+
+def get_speaker(parti):
+    if parti == 'Parent':
+        speaker = 'Child' 
+    elif parti == 'Child':
+        speaker = 'Parent'
+    elif parti == 'Adult1':
+        speaker = 'Adult2'
+    elif parti == 'Adult2':
+        speaker = 'Adult1'
+    return speaker
 
 ################
 #Vocal features#
@@ -231,7 +241,7 @@ def extract_visual(whole_data,BC,n):
     parti = BC['participant'][n]
     filename = BC['filename'][n]
     # potential visual cue list from the speaker
-    tag_lst = ['LS','Nods','HShake','S1','S2','Laugh','Frown','Raised']
+    tag_lst = ['LS','Nod','NodR','NodF','HShake','S1','S2','Laugh','Frown','Raised','Forward','Backward']
     # get the speaker's tag
     speaker = get_speaker(parti)
     # filter the desired visual data from the whole data
@@ -248,9 +258,16 @@ def extract_visual(whole_data,BC,n):
         duration = final['duration.1'].sum()
         result_no.append(number)
         result_dur.append(duration)
+    # return a dataframe with all the listed features    
     df_no = pd.DataFrame(result_no).T
     df_dur = pd.DataFrame(result_dur).T
-    # return a dataframe with all the listed features
+    # aggregate smile and nod features
+    df_no['Nod'] = df_no[1] + df_no[2] + df_no[3]
+    df_no['Smile'] = df_no[5] + df_no[6] 
+    df_dur['Nod'] = df_dur[1] + df_dur[2] + df_dur[3]
+    df_dur['Smile'] = df_dur[5] + df_dur[6] 
+    df_no.drop([1,2,3,5,6], inplace=True, axis = 1)
+    df_dur.drop([1,2,3,5,6], inplace=True, axis = 1)
     return df_no, df_dur
 
 
@@ -264,11 +281,10 @@ while n < data.shape[0]:
     visual_all_no = pd.concat([visual_all_no, visual_no])
     visual_all_dur = pd.concat([visual_all_dur, visual_dur])
     n += 1 
-    
+
 # add headers to the dataframe
-visual_no_result = visual_all_no.rename(columns={0:'LS',1:'Nods',2:'HShake',3:'S1',4:'S2',5:'Laugh',6:'Frown',7:'Raised'})
-visual_dur_result = visual_all_dur.rename(columns={0:'LS',1:'Nods',2:'HShake',3:'S1',4:'S2',5:'Laugh',6:'Frown',7:'Raised'})
-headers =  ['LS','Nods','HShake','S1','S2','Laugh','Frown','Raised']
+visual_no_result = visual_all_no.rename(columns={0:'Gaze',4:'HShake',7:'Laugh',8:'Frown',9:'Raised',10:'Forward', 11:'Backward'})
+visual_dur_result = visual_all_dur.rename(columns={0:'Gaze',4:'HShake',7:'Laugh',8:'Frown',9:'Raised',10:'Forward', 11:'Backward'})
 visual_no_result.to_csv('visual_no.csv',index=False) 
 visual_dur_result.to_csv('visual_dur.csv',index=False)  
 # concatenate the results    
@@ -295,7 +311,7 @@ def get_POS(transcription,language):
     n = 0
     info_utt = []
     transcription = transcription.values.tolist()
-    transcription = pd.DataFrame(transcription, columns = ['index1','index2','Filename','UtteranceName','Speaker', 'Text','Start','End','Length'])
+    transcription = pd.DataFrame(transcription, columns = ['index1','Filename','UtteranceName','Speaker', 'Text','Start','End','Length'])
     new = transcription[['Filename','UtteranceName','Speaker', 'Text','Start','End','Length']]
     while n < len(utt): 
         utt_name = new['UtteranceName'][n]
@@ -309,21 +325,11 @@ def get_POS(transcription,language):
     utt_frame = pd.DataFrame(info_utt, columns = ['Filename','UtteranceName','Word','POS'])
     return utt_frame
 
-
-def append_POS(transcription,Words,language):
-    utt_frame = get_POS(transcription,language)      
-    if language == 'French':
-        Words = Words[(Words['Filename'] != 'CA-BO-IO') & (Words['Filename'] != 'AA-BO-CM')]
-    if language == 'English':
-        Words = Words[(Words['Filename'] == 'CA-BO-IO') | (Words['Filename'] == 'AA-BO-CM')]
-    utt_frame['standard'] = utt_frame['UtteranceName']+utt_frame['Word']
-    Words['standard'] = Words['UtteranceName']+Words['Word']  
-    utt_frame_lst = utt_frame['standard'].tolist()
-    # get the matching word from FA document
-    result = Words.loc[Words['standard'].isin(utt_frame_lst)] 
+# input: selected FA dataframe; a list containing word+utterance name
+def match_POS(result,utt_frame_lst,utt_frame):
     result1 = result[['Word', 'Start', 'End','Length','UtteranceName','Speaker', 
                      'Filename','Global_start','Global_end','standard']].values.tolist()
-    # match the POS tags to the word dataframe
+    # match the POS tags to the word dataframe based on word and filename
     suspicious = []
     POS_lst = []
     final = pd.DataFrame()
@@ -346,21 +352,101 @@ def append_POS(transcription,Words,language):
     final = result[['Filename','UtteranceName','Speaker','Word','Start','End','Global_start','Global_end','Length','POS']]
     return final
 
-Words = pd.read_csv('word.csv')
-transcription = pd.read_csv('transcription.csv')
-utt_frame = pd.read_csv('POS_candi.csv')
+
+def append_POS(transcription,Words,language):
+    utt_frame = get_POS(transcription,language)      
+    if language == 'French':
+        Words = Words[(Words['Filename'] != 'CA-BO-IO') & (Words['Filename'] != 'AA-BO-CM')]
+    if language == 'English':
+        Words = Words[(Words['Filename'] == 'CA-BO-IO') | (Words['Filename'] == 'AA-BO-CM')]
+    utt_frame['standard'] = utt_frame['UtteranceName']+utt_frame['Word']
+    Words['standard'] = Words['UtteranceName']+Words['Word']  
+    utt_frame_lst = utt_frame['standard'].tolist()
+    # get the matching word from FA document
+    result = Words.loc[Words['standard'].isin(utt_frame_lst)] 
+    # get more candidates from the unmatching parts
+    rest = Words.loc[~Words['standard'].isin(utt_frame_lst)] 
+    # split words contracted by '\'' or '-'
+    contracted_word = rest.loc[(rest['Word'].str.contains('\''))|(rest['Word'].str.contains('-'))]
+    contracted_word = contracted_word.reset_index()
+    #contracted_word.drop(['Index','Unnamed'],inplace=True, axis = 1)
+    candi = pd.DataFrame()
+    n = 0
+    while n < contracted_word.shape[0]:
+        word = contracted_word['Word'][n]
+        # split words based on connecting symbols
+        word_lst = word.replace('-','\'').split('\'')
+        # duplicate rows based on the no. of subcomponenets
+        if len(word_lst)>1:   
+            selected = contracted_word.iloc[[n]]    
+            updated = selected.loc[selected.index.repeat(len(word_lst))]
+            # replace the word column with the segmented words
+            updated['Word'] = word_lst
+            # concatenate the renewed dataframes
+            candi = pd.concat([updated,candi])
+        n +=1
+    renewed_standard = candi['UtteranceName'] + candi['Word'] 
+    candi['standard'] = renewed_standard
+    # get the additional matching words
+    add_result = candi.loc[candi['standard'].isin(utt_frame_lst)] 
+    final_whole = match_POS(result,utt_frame_lst,utt_frame)
+    final_add = match_POS(add_result,utt_frame_lst,utt_frame)
+    final = pd.concat([final_whole,final_add])
+    return final
+
+def extract_POS(whole_data,BC,n):
+    parti = BC['participant'][n]
+    filename = BC['filename'][n][:-15]
+    # types of POS
+    POS_lst = whole_data['POS'].tolist()
+    tag_lst = list(dict.fromkeys(POS_lst))
+    # get the speaker's tag
+    speaker = get_speaker(parti)
+    number_lst = []
+    candi = []
+    # filter the desired POS data from the whole data
+    for tag in tag_lst: 
+        selected = whole_data.loc[((whole_data['Speaker'] == speaker) & (whole_data['Filename'] == filename) & (whole_data['POS'] == tag))]
+        candi.append(selected)
+        for frame in candi:
+        # get the behaviors based on the time interval
+            start_point = BC['onset.1'][n]-3
+            end_point = BC['onset.1'][n]
+            final = frame.loc[(frame['Global_start'] >= start_point)&(frame['Global_end'] <= end_point)] 
+            # calculate the number of occurence of each POS in the given time window       
+            number = final.shape[0]
+        number_lst.append(number)
+    # return a dataframe with all the listed features    
+    df_no = pd.DataFrame(number_lst).T 
+    return df_no       
+ 
+n = 0
+POS_all_no = pd.DataFrame()
+while n < BC.shape[0]:   
+    # get each datapoint's preceding visual cues
+    POS_no = extract_POS(whole_data,BC,n)
+    POS_all_no = pd.concat([POS_all_no, POS_no])
+    n += 1 
+POS_no_result = POS_all_no.rename(columns={0:'PRON',1:'ADP',2:'ADV',3:'CCONJ',4:'ADJ',5:'DET',
+                                           6:'NOUN',7:'VERB',8:'INTJ',9:'SCONJ',10:'AUX', 
+                                           11:'PUNCT',12:'PROPN',13:'NUM',14:'X',15:'SYMS',16:'PART'})
+
+POS_no_result.to_csv('POS_no.csv')
 
 
-result_eng = append_POS(transcription,Words,'English')
-result_eng.to_csv('result_eng.csv')
-result_fr = append_POS(transcription,Words,'French')
-result_eng = pd.read_csv('result_eng.csv')
-result_fr = pd.read_csv('result_fr.csv')
-final = pd.concat([result_fr,result_eng])
-final.to_csv('POS.csv')
-POS_lst = final['POS'].tolist()
-#get type of POS
-POS_type = list(dict.fromkeys(POS_lst))
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+    
