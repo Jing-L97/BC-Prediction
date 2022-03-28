@@ -2,6 +2,11 @@
 """
 Extract multimodal features for training
 
+input: the folder path containing: 
+        1.audio filefolder; 2.POS file; 3.datapoints; 4.visual file
+
+output: an EXCEL file containing multimodal features 
+
 @author: Jing Liu
 """
 import pandas as pd
@@ -17,16 +22,17 @@ import numpy as np
 from scipy.io import wavfile
 import noisereduce as nr
 import spacy
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import numpy as np
+import torch
+from torch.nn import CrossEntropyLoss
+from scipy.special import softmax
+import string
+import math
 
 ##############
-#import files#
+#general func#
 ##############
-data = pd.read_csv('BC_oppor.csv')
-whole_data = pd.read_csv('AllData.csv')
-# eGeMAPS_all = pd.read_csv('eGeMAPS_all_3.csv')
-# visual_no_result= pd.read_csv('visual_no.csv') 
-# visual_dur_result= pd.read_csv('visual_dur.csv') 
-
 # add the extracted features to the original dataset
 def add_features(data,features):
     data = data.reset_index()
@@ -58,12 +64,6 @@ def reduce_noise(audio_name):
     wavfile.write(audio_name, rate, reduced_noise)
     return reduced_noise
 
-# extract fea based on the corresponding speakers
-path = 'C:/Users/Crystal/OneDrive/Desktop/converted'
-folder = os.fsencode(path)
-for file in os.listdir(folder):
-    filename = os.fsdecode(file)
-    reduce_noise(filename)   
 
 # Feature 1: eGeMAPS feature set (esp: HNR; MFCC;energy) remember to set the sampling rate!
 def extract_eGeMAPS(file,CueStart,timewindow):
@@ -75,7 +75,7 @@ def extract_eGeMAPS(file,CueStart,timewindow):
 
 # iterate each BC response and the corresponding audio file(file_location: the audio file)
 # concatenate features to original dataset
-def concate_eGeMAPS(file,timewindow): 
+def concate_eGeMAPS(data,file,timewindow): 
     n = 0
     eGeMAPS_all = pd.DataFrame()
     while n < file.shape[0]:   
@@ -84,18 +84,36 @@ def concate_eGeMAPS(file,timewindow):
         # get the timewindow
         # if the starting point is smaller than the timewindow, than start from the beginning
         start_point = file['onset.1'][n]-timewindow
-        # entry the speaker's audio folder
+        # enter the speaker's audio folder
         folder_name = get_speaker(data['participant'][n])
         # extract the corresponding acoustic fea
         audio = './' + folder_name + '/' + audio_name
         eGeMAPS = extract_eGeMAPS(audio,start_point,timewindow)
         eGeMAPS_all = pd.concat([eGeMAPS_all, eGeMAPS])
         n += 1 
-    eGeMAPS_all.to_csv('eGeMAPS_cleaned_3.csv',index=False) 
+    name = 'eGeMAPS_'+timewindow+'.csv'
+    eGeMAPS_all.to_csv(name,index=False) 
     return eGeMAPS_all
 
-eGeMAPS_all = concate_eGeMAPS(data,3)
-
+# for those less than 
+def more_eGeMAPS(file): 
+    n = 0
+    eGeMAPS_all = pd.DataFrame()
+    while n < file.shape[0]:   
+        # get the audio file name
+        audio_name = file['filename'][n][:-15] + '.wav'
+        # get the timewindow
+        # if the starting point is smaller than the timewindow, than start from the beginning
+        start_point = file['onset.1'][n]
+        # enter the speaker's audio folder
+        folder_name = get_speaker(file['participant'][n])
+        # extract the corresponding acoustic fea
+        audio = './audio/' + folder_name + '/' + audio_name
+        eGeMAPS = extract_eGeMAPS(audio,start_point,start_point)
+        eGeMAPS_all = pd.concat([eGeMAPS_all, eGeMAPS])
+        n += 1 
+    eGeMAPS_all.to_csv('eGeMAPS_more.csv',index=False) 
+    return eGeMAPS_all
 
 # Feature 2: intonation features: use ToBI structure
 # transciprtion pre-processing: into the same line
@@ -119,14 +137,7 @@ def clean_trans(file):
     text_file.close()
     return cleaned
 
-# walk the folder to get the final results
-path = 'D:/course material/Master thesis/BC/data & modeling/dataset/Transcriptions'
-folder = os.fsencode(path)
-for file in os.listdir(folder):
-    filename = os.fsdecode(file)
-    clean_trans(filename)   
-    
-    
+
 # naive one: calculate the slope here
 # get the peak
 # types: flat; rising; falling; rising-falling; falling-rising
@@ -206,7 +217,7 @@ def extract_pitch_change(file,start_point,timewindow):
     # temporal for pitch change
     return intonation
 
-def concate_intonation(file,timewindow): 
+def concate_intonation(data,file,timewindow): 
     n = 0
     intonation_all = []
     while n < data.shape[0]:   
@@ -224,10 +235,8 @@ def concate_intonation(file,timewindow):
     intonation_all.to_csv('intonation_all.csv',index=False) 
     return intonation_all
     
-# input: file with the starting points; audio files' path; output: dataframe/list with the intonation category
-intonation_all = concate_intonation(data,3)  
-    
-    
+
+
 #################
 #Visual features#
 #################
@@ -235,7 +244,7 @@ intonation_all = concate_intonation(data,3)
 # loop each datapoint, try to get the speaker's turn
 # this is for each data point
 # input: info of each datapoint
-def extract_visual(whole_data,BC,n): 
+def extract_visual(whole_data,BC,n,timewindow): 
     result_no = []
     result_dur = []
     parti = BC['participant'][n]
@@ -249,7 +258,7 @@ def extract_visual(whole_data,BC,n):
         visual = whole_data.loc[((whole_data['participant'] == speaker) & (whole_data['filename'] == filename) & (whole_data['category'] == tag))]
         # get the behaviors based on the time interval
         # make sure the target behavior occurs in the given time window
-        start_point = BC['onset.1'][n]-3
+        start_point = BC['onset.1'][n]-timewindow
         end_point = BC['onset.1'][n]
         final = visual.loc[(((visual['onset.1'] >= start_point) & (visual['onset.1'] <= end_point)) | ((visual['offset.1'] >= start_point) & (visual['offset.1'] <= end_point))| ((visual['onset.1'] <= start_point) & (visual['offset.1'] >= end_point)))]    
         # calculate the number of occurence in the given time window
@@ -270,29 +279,24 @@ def extract_visual(whole_data,BC,n):
     df_dur.drop([1,2,3,5,6], inplace=True, axis = 1)
     return df_no, df_dur
 
-
-# loop BC dataframe
-n = 0
-visual_all_no = pd.DataFrame()
-visual_all_dur = pd.DataFrame()
-while n < data.shape[0]:   
-    # get each datapoint's preceding visual cues
-    visual_no, visual_dur = extract_visual(whole_data,data,n)
-    visual_all_no = pd.concat([visual_all_no, visual_no])
-    visual_all_dur = pd.concat([visual_all_dur, visual_dur])
-    n += 1 
-
-# add headers to the dataframe
-visual_no_result = visual_all_no.rename(columns={0:'Gaze',4:'HShake',7:'Laugh',8:'Frown',9:'Raised',10:'Forward', 11:'Backward'})
-visual_dur_result = visual_all_dur.rename(columns={0:'Gaze',4:'HShake',7:'Laugh',8:'Frown',9:'Raised',10:'Forward', 11:'Backward'})
-visual_no_result.to_csv('visual_no.csv',index=False) 
-visual_dur_result.to_csv('visual_dur.csv',index=False)  
-# concatenate the results    
-new_set = add_features(data,eGeMAPS_all)    
-final_set_no = add_features(new_set,visual_no_result)
-final_set_dur = add_features(new_set,visual_dur_result)   
-final_set_no.to_csv('final_set_no.csv',index=False) 
-final_set_dur.to_csv('final_set_dur.csv',index=False) 
+def concat_visual(whole_data,data,timewindow):
+    # loop BC dataframe
+    n = 0
+    visual_all_no = pd.DataFrame()
+    visual_all_dur = pd.DataFrame()
+    while n < data.shape[0]:   
+        # get each datapoint's preceding visual cues
+        visual_no, visual_dur = extract_visual(whole_data,data,n,timewindow)
+        visual_all_no = pd.concat([visual_all_no, visual_no])
+        visual_all_dur = pd.concat([visual_all_dur, visual_dur])
+        n += 1 
+    
+    # add headers to the dataframe
+    visual_no_result = visual_all_no.rename(columns={0:'Gaze',4:'HShake',7:'Laugh',8:'Frown',9:'Raised',10:'Forward', 11:'Backward'})
+    visual_dur_result = visual_all_dur.rename(columns={0:'Gaze',4:'HShake',7:'Laugh',8:'Frown',9:'Raised',10:'Forward', 11:'Backward'})
+    visual_no_result.to_csv('visual_no.csv',index=False) 
+    visual_dur_result.to_csv('visual_dur.csv',index=False)  
+    return visual_no,visual_dur
 
 
 #################
@@ -394,7 +398,7 @@ def append_POS(transcription,Words,language):
     final = pd.concat([final_whole,final_add])
     return final
 
-def extract_POS(whole_data,BC,n):
+def extract_POS(whole_data,BC,n,timewindow):
     parti = BC['participant'][n]
     filename = BC['filename'][n][:-15]
     # types of POS
@@ -410,7 +414,7 @@ def extract_POS(whole_data,BC,n):
         candi.append(selected)
         for frame in candi:
         # get the behaviors based on the time interval
-            start_point = BC['onset.1'][n]-3
+            start_point = BC['onset.1'][n]-timewindow
             end_point = BC['onset.1'][n]
             final = frame.loc[(frame['Global_start'] >= start_point)&(frame['Global_end'] <= end_point)] 
             # calculate the number of occurence of each POS in the given time window       
@@ -419,32 +423,127 @@ def extract_POS(whole_data,BC,n):
     # return a dataframe with all the listed features    
     df_no = pd.DataFrame(number_lst).T 
     return df_no       
- 
-n = 0
-POS_all_no = pd.DataFrame()
-while n < BC.shape[0]:   
-    # get each datapoint's preceding visual cues
-    POS_no = extract_POS(whole_data,BC,n)
-    POS_all_no = pd.concat([POS_all_no, POS_no])
-    n += 1 
-POS_no_result = POS_all_no.rename(columns={0:'PRON',1:'ADP',2:'ADV',3:'CCONJ',4:'ADJ',5:'DET',
-                                           6:'NOUN',7:'VERB',8:'INTJ',9:'SCONJ',10:'AUX', 
-                                           11:'PUNCT',12:'PROPN',13:'NUM',14:'X',15:'SYMS',16:'PART'})
 
-POS_no_result.to_csv('POS_no.csv')
+def concat_POS(data,timewindow):
+    POS = pd.read_csv('POS.csv')
+    n = 0
+    POS_all_no = pd.DataFrame()
+    while n < data.shape[0]:   
+        # get each datapoint's preceding POS cues
+        POS_no = extract_POS(POS,data,n,timewindow)
+        POS_all_no = pd.concat([POS_all_no, POS_no])
+        n += 1 
+    POS_no_result = POS_all_no.rename(columns={0:'PRON',1:'ADP',2:'ADV',3:'CCONJ',4:'ADJ',5:'DET',
+                                               6:'NOUN',7:'VERB',8:'INTJ',9:'SCONJ',10:'AUX', 
+                                               11:'PUNCT',12:'PROPN',13:'NUM',14:'X',15:'SYMS',16:'PART'})
+
+    POS_no_result.to_csv('POS_no.csv')
+    return POS_no_result
+
+# get word surprisal
+def get_info(frame,aspect):
+    file_lst = frame[aspect].tolist()
+    file_info = []
+    for i in list(dict.fromkeys(file_lst)):
+        specific = frame[frame['filename'] == i]        
+        info = [i,len(specific)]
+        file_info.append(info)
+    return file_info
+
+#load the model
+# model = GPT2LMHeadModel.from_pretrained('emil2000/dialogpt-for-french-language')    
+# tokenizer = GPT2Tokenizer.from_pretrained('emil2000/dialogpt-for-french-language')
 
 
+def get_probability(context,word):
+	indexed_tokens = tokenizer.encode(context)
+	tokens_tensor = torch.tensor([indexed_tokens])
+	with torch.no_grad():
+		predictions = model(tokens_tensor)
+		results = predictions[0]    
+		temp = results[0,-1,:]
+		temp = temp.numpy()
+		result = softmax(temp)	
+		word = tokenizer.encode(word)[0]
+		probability = result[word]
+	return probability
+
+# get each word's probability of a single utterance
+def read_trans(sentence):
+  # remove punctuations
+  text = sentence.translate(str.maketrans('','',string.punctuation))
+  # convert sentence into a list of words
+  words = text.split(' ')
+  # loop each word in the utterance sentence
+  prob_lst = []
+  n = 0
+  while n<len(words):
+    #if n==0:
+      # no preceding context word
+    if n > 0:
+      context_str = ' '.join([str(item) for item in words[:n]]) 
+      word = words[n]
+      try:
+        # only get the possibility that exist in the vocabulary list
+        probability = get_probability(context_str,word)
+        prob_lst.append([word,probability])
+      except:
+        pass
+    n+=1
+  return prob_lst
+
+# get de-contextualized entropy 
+def get_entropy(sentence):
+  prob_lst = read_trans(sentence)
+  final = []
+  n = 0
+  while n<len(prob_lst):
+    if n == 0:
+      condi = prob_lst[n][1]
+    else:
+      prob = prob_lst[n][1]
+      context_prob_candi = prob_lst[:n]
+      context_prob = [el[1] for el in context_prob_candi][0]
+      condi = (prob*context_prob)/context_prob
+    entropy = -1*(math.log2(condi))
+    final.append(entropy)
+    n += 1
+  # combine two lists 
+  prob_frame = pd.DataFrame (prob_lst, columns = ['word','probability'])  
+  prob_frame['entropy'] = final
+  return prob_frame
 
 
+def appen_entropy(transcription):
+    # loop the whole dataframe
+    n = 0
+    log = []
+    entropy = pd.DataFrame()
+    while n < transcription.shape[0]: 
+      utt_name = transcription['UtteranceName'][n]
+      file_name = transcription['Filename'][n]
+      try:
+        entropy_frame = get_entropy(transcription['Text'][n])
+        entropy = pd.concat([entropy_frame,entropy])
+        entropy['UtteranceName'] = utt_name
+        entropy['Filename'] = file_name
+      except:
+        log.append(utt_name)
+      n += 1
+    entropy.to_csv('entropy.csv')
+    return entropy
 
 
-
-
-
-
-
-
-
+def main():
+    data = pd.read('BC_opportunity.csv')
+    whole_data = pd.read('AllData.csv')
+    timewindow = 2
+    concate_eGeMAPS(data,whole_data,timewindow)
+    concat_visual(whole_data,data,timewindow)
+    concat_POS(data,timewindow)
+    
+if __name__ == "__main__":
+    main()
 
 
 
