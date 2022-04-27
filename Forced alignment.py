@@ -180,9 +180,10 @@ def segment_audio(path):
                 except:
                     print(name)
                 n+=1
+            new = pd.concat([new, data])
         except:
             print(transcription)
-        new = pd.concat([new, data])
+        
     return new
 
 
@@ -280,8 +281,8 @@ def parse_Interval(IntervalObject):
     return [pn,st,et]
 
 # get a list of all the phonemes
-def parse_textgrid(filename,layername):
-    tg = textgrid.TextGrid.fromFile(filename)
+def parse_textgrid(filepath, filename, layername):
+    tg = textgrid.TextGrid.fromFile(filepath)
     list_words = tg.getList(layername)
     words_list = list_words[0]
     final = pd.DataFrame()
@@ -313,20 +314,22 @@ def get_duration(path,layername,transcription):
     final = pd.DataFrame()
     for file in os.listdir(folder):
         filename = os.fsdecode(file)
-        data = parse_textgrid(filename,layername)        
-        # change the duration     
-        global_start = transcription.loc[transcription['UtteranceName'] == data['UtteranceName'].tolist()[0], 'Start'].tolist()[0]
-        renewed_start = data['Start'] + global_start
-        renewed_end = data['End'] + global_start
-        data['Global_start'] = renewed_start
-        data['Global_end'] = renewed_end
-        final = pd.concat([data,final])
+        if filename.endswith('.TextGrid'):
+            filepath = os.path.join(path, filename)
+            data = parse_textgrid(filepath, filename, layername)        
+            # change the duration     
+            global_start = transcription.loc[transcription['UtteranceName'] == data['UtteranceName'].tolist()[0], 'Start'].tolist()[0]
+            renewed_start = data['Start'] + global_start
+            renewed_end = data['End'] + global_start
+            data['Global_start'] = renewed_start
+            data['Global_end'] = renewed_end
+            final = pd.concat([data,final])
     final.to_csv('word.csv', index=False)    
     return final
 
 
 def main():
-    path = 'Path\\to\\your\\dataset'
+    path = './Example'
     transcription = segment_audio(path)
     perform_FA(path)
     get_duration(path,"ORT-MAU",transcription)
