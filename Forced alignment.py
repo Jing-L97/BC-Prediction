@@ -329,7 +329,7 @@ def get_duration(path,layername,transcription):
 
 
 def main():
-    path = './Example'
+    path = 'Path\\to\\your\\dataset'
     transcription = segment_audio(path)
     perform_FA(path)
     get_duration(path,"ORT-MAU",transcription)
