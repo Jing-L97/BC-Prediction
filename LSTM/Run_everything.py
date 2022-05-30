@@ -222,6 +222,7 @@ def negative_sample(results_dict,true_vals,predicted_vals):
             print(filename)
     return true_vals_seg,predicted_vals_seg,final
 
+
 # early feature fusion  
 def load_data(file_list,annotations_dir,modality):   
     # read files of different modalities    
@@ -265,7 +266,8 @@ def load_data(file_list,annotations_dir,modality):
         #min_len = min([len(temp_x['frame_time'].tolist()),len(temp_y['frameTimes'].tolist())])
         
         # truncate two dataframes
-        x_temp = temp_x.head(min_len_fea)
+        #x_temp = temp_x.head(min_len_fea)
+        x_temp = temp_x
         y_temp = temp_y.head(min_len_fea)
         # convert into the form of dictionary
         
@@ -435,148 +437,6 @@ def test(model,test_dataset,test_file_list,test_dataloader,results_save,test_res
      
     return results_save,model_input
 
-# use train and validation set to get the optimal parameters    
-def objective(trial):
-    # load files
-    
-    train_dataset, train_results_length = load_data(train_file_list,annotations_dir,modality)               
-    test_dataset, test_results_length = load_data(validation_file_list,annotations_dir,modality) 
-
-
-    train_dataloader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=shuffle, num_workers=0,
-                                      drop_last=True, pin_memory=p_memory)
-
-    test_dataloader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=shuffle, num_workers=0,
-                                      drop_last=True, pin_memory=p_memory)
-     
-    feature_size_dict = {}
-    feature_size_dict['acous'] = train_dataset[0]['x'].shape[0]
-   
-    
-    #embedding_info = train_dataset.get_embedding_info()
-    embedding_info = {'acous': [], 'visual': []}
-   
-    # tune the drop-out; L2 
-    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
-    dropout_out = trial.suggest_float("dropout_out",0.000001, 0.5)
-    L2 = trial.suggest_float("L2",0, 1e-4)
-    
-    lstm_settings_dict = {'no_subnets': True, 
-     'hidden_dims': {'master': 50, 'acous': 50, 'visual': 0}, 
-     'uses_master_time_rate': {'acous': True}, 
-     'time_step_size': {'acous': 1}, 
-     'is_irregular': {'acous': False}, 
-     'layers': 1, 
-     'dropout': {'master_out': dropout_out, 'master_in': dropout_out, 'acous_in': 0.25, 'acous_out': 0.25, 'visual_in': 0, 'visual_out': 0.0}, 
-     'active_modalities': ['acous']}
-
-    l2_dict = {
-        'emb': 0.0001,
-        'out': L2,
-        'master': 0.00001,
-        'acous': L2,
-        'visual': 0.}
-     
-    model = LSTMPredictor(lstm_settings_dict=lstm_settings_dict, feature_size_dict=feature_size_dict,
-                          batch_size=train_batch_size, seq_length=sequence_length, prediction_length=prediction_length,
-                          embedding_info=embedding_info)
-    
-    model.weights_init(init_std)
-    
-    optimizer_list = []
-
-    optimizer_list.append( optim.Adam( model.out.parameters(), lr=lr, weight_decay=l2_dict['out'] ) )
-    for embed_inf in embedding_info.keys():
-        if embedding_info[embed_inf]:
-            for embedder in embedding_info[embed_inf]:
-                if embedder['embedding_use_func'] or (embedder['use_glove'] and not(lstm_settings_dict['freeze_glove'])):
-                    optimizer_list.append(
-                        optim.Adam( model.embedding_func.parameters(), lr=lr, weight_decay=l2_dict['emb'] )
-                                          )
-
-    for lstm_key in model.lstm_dict.keys():
-        optimizer_list.append(optim.Adam(model.lstm_dict[lstm_key].parameters(), lr=lr, weight_decay=l2_dict[lstm_key]))
-
-    
-    # save the result into a dictionary
-    results_save = dict()
-    results_save['train_losses'], results_save['test_losses'], results_save['indiv_perf'], results_save['accuracy_scores'],results_save[
-        'accuracy_evaluate'], results_save['acc_score_final'],results_save['max_acc'],results_save[
-            'min_acc'],results_save['true_vals'],results_save['predicted_vals']= [], [], [], [], [], [], [], [], [], []
- 
-    
-    # %% Training
-    for epoch in range(0, num_epochs):
-        # tell pytorch that you are training the model so that the settings would be different
-        model.train()
-        t_epoch_strt = t.time()
-        loss_list = []
-        model.change_batch_size_reset_states(train_batch_size)
-    
-        for batch_indx, batch in enumerate(train_dataloader):
-            # b should be of form: (x,x_i,v,v_i,y,info)
-            model.init_hidden()
-            model.zero_grad()
-            model_input = []
-    
-            # set model input here
-            
-            model_input_temp = batch['x'].transpose(1, 2).transpose(0, 1)
-            model_input = [model_input_temp,[],[],[]]
-            
-            #y = Variable(batch[4].type(dtype).transpose(0, 2).transpose(1, 2))
-            
-            model_output_logits = model(model_input)
-       
-            y = batch['y'].transpose(0, 1)
-            
-            loss = loss_func_BCE_Logit(model_output_logits,y.float())
-            loss_list.append(loss.cpu().data.numpy())
-            loss.backward()
-            
-            if grad_clip_bool:
-                clip_grad_norm(model.parameters(), grad_clip)
-            
-            for opt in optimizer_list:
-                opt.step()
-        
-        # stores the BCE loss func results
-        results_save['train_losses'].append(np.mean(loss_list))
-        
-        
-        # %% Test model
-        t_epoch_end = t.time()
-        model.eval()
-        results_save, test_input = test(model,test_dataset,validation_file_list,test_dataloader,results_save, test_results_length)
-        model.train()
-        t_total_end = t.time()
-        #        torch.save(model,)
-        print(
-            '{0} \t Test_loss: {1}\t Train_Loss: {2} \t Acc: {3} \t Acc_evaluate: {4}\t Train_time: {5} \t Test_time: {6} \t Total_time: {7}'.format(
-                epoch + 1,
-                np.round(results_save['test_losses'][-1], 4),
-                np.round(np.float64(np.array(loss_list).mean()), 4),
-                np.around(results_save['accuracy_scores'][-1], 4),
-                np.around(results_save['accuracy_evaluate'][-1], 4),
-                np.round(t_epoch_end - t_epoch_strt, 2),
-                np.round(t_total_end - t_epoch_end, 2),
-                np.round(t_total_end - t_epoch_strt, 2)))
-        
-        
-        
-        if (epoch + 1 > patience) and \
-                (np.argmin(np.round(results_save['test_losses'], 4)) < (len(results_save['test_losses']) - patience)):
-            print('early stopping called at epoch: ' + str(epoch + 1))
-            break
-    
-    accuracy = max(results_save['accuracy_scores'])   
-    trial.report(accuracy, epoch)
-
-    # Handle pruning based on the intermediate value.
-    if trial.should_prune():
-        raise optuna.exceptions.TrialPruned()
-    
-    return accuracy
 
 def run_model(para_results,train_file_list, test_file_list,modality):
     # load files
@@ -712,7 +572,7 @@ def run_model(para_results,train_file_list, test_file_list,modality):
 def plot_results(results_save, model,modality):
     # save all the results
     result_dir_name = t.strftime('%Y%m%d%H%M%S')[5:-2]
-    result_dir_name = modality + result_dir_name + title
+    result_dir_name = modality + result_dir_name + modality
         
     if not (exists(results_dir)):
         mkdir(results_dir)
@@ -730,94 +590,230 @@ def plot_results(results_save, model,modality):
     perf_plot(results_save, 'accuracy_evaluate', result_dir_name) 
     plt.close('all')
 
-
-def run_tuned(file_list,modality):
-    para_results = {}
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=100, timeout=600)
-    pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
-    complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
-    print("Study statistics: ")
-    print("Number of finished trials: ", len(study.trials))
-    print("Number of pruned trials: ", len(pruned_trials))
-    print("Number of complete trials: ", len(complete_trials))
-    
-    print("Best trial:")
-    trial = study.best_trial
-    print("  Value: ", trial.value)
-    print("  Params: ")
-    for key, value in trial.params.items():
-        print("    {}: {}".format(key, value))
-        
-    # save the best combinations of parameters in the form of dictionary
-    para_results["Number of finished trials"] = len(study.trials)
-    para_results["Number of pruned trials"] = len(pruned_trials)
-    para_results["Number of complete trials"] = len(complete_trials)
-    param = trial.params
-    para_results.update(param)
-    
-    # LOSO cross-validation
-    # run the model with the selected parameters 
-    acc_max_lst = []
-    acc_min_lst = []
-    predicted_tot = []
-    true_tot = []
-    final_results = []
-    n = 0
-    for file in file_list:
-        # leave one speaker out cross validation
-        test_file_list = [file]
-        train_file_list = file_list.copy()
-        train_file_list.remove(file)
-        
-        print('Start running fold: ' + str(n))
-        
-        results,model = run_model(para_results,train_file_list, test_file_list,modality)
-        final_results.append(results)
-        
-        # get the highest accuracy score of test sets for each fold
-        acc_max_lst.append(max(results['accuracy_scores'][-(round(len(results['accuracy_scores'])/10)):]))
-        acc_min_lst.append(min(results['accuracy_scores'][-(round(len(results['accuracy_scores'])/10)):]))
-        true_tot.append(results['true_vals'])
-        predicted_tot.append(results['predicted_vals'])
-        
-        print('Finished running fold' + str(n))
-        n += 1
-    
-
-
-    # flatten the nested lists
-    true_vals_temp = [item for sublist in true_tot for item in sublist]
-    predicted_vals_temp = [item for sublist in predicted_tot for item in sublist]
-    true_vals = [item for sublist in true_vals_temp for item in sublist]
-    predicted_vals = [item for sublist in predicted_vals_temp for item in sublist]
-    acc_score_final = accuracy_score(true_vals, predicted_vals)
-    
-    # choose the structure/parameter information based on each fold's f-scores
-    max_acc = max(acc_max_lst) 
-    max_index = acc_max_lst.index(max_acc)
-    min_acc = min(acc_min_lst) 
-    results_save = final_results[max_index]
-    # save more results
-    results_save['acc_score_final'] = acc_score_final
-    results_save['max_acc'] = max_acc
-    results_save['min_acc'] = min_acc
-
-    # save and plot final results
-    plot_results(results_save, model,modality)
-    return results_save
-
-
+# use train and validation set to get the optimal parameters  
 # loop listenrs and modalities
-modality_lst = ['visual','vocal','verbal','all','visual_vocal','visual_verbal','verbal_vocal']    
-for modality in modality_lst: 
-    results_save = run_tuned(file_list,modality)
+modality_lst = ['visual','vocal','verbal'] 
+for modality in modality_lst:   
+    def objective(trial):
+        # load files
+        
+        train_dataset, train_results_length = load_data(train_file_list,annotations_dir,modality)               
+        test_dataset, test_results_length = load_data(validation_file_list,annotations_dir,modality) 
     
+    
+        train_dataloader = DataLoader(train_dataset, batch_size=train_batch_size, shuffle=shuffle, num_workers=0,
+                                          drop_last=True, pin_memory=p_memory)
+    
+        test_dataloader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=shuffle, num_workers=0,
+                                          drop_last=True, pin_memory=p_memory)
+         
+        feature_size_dict = {}
+        feature_size_dict['acous'] = train_dataset[0]['x'].shape[0]
+       
+        
+        #embedding_info = train_dataset.get_embedding_info()
+        embedding_info = {'acous': [], 'visual': []}
+       
+        # tune the drop-out; L2 
+        lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
+        dropout_out = trial.suggest_float("dropout_out",0.000001, 0.5)
+        L2 = trial.suggest_float("L2",0, 1e-4)
+        
+        lstm_settings_dict = {'no_subnets': True, 
+         'hidden_dims': {'master': 50, 'acous': 50, 'visual': 0}, 
+         'uses_master_time_rate': {'acous': True}, 
+         'time_step_size': {'acous': 1}, 
+         'is_irregular': {'acous': False}, 
+         'layers': 1, 
+         'dropout': {'master_out': dropout_out, 'master_in': dropout_out, 'acous_in': 0.25, 'acous_out': 0.25, 'visual_in': 0, 'visual_out': 0.0}, 
+         'active_modalities': ['acous']}
+    
+        l2_dict = {
+            'emb': 0.0001,
+            'out': L2,
+            'master': 0.00001,
+            'acous': L2,
+            'visual': 0.}
+         
+        model = LSTMPredictor(lstm_settings_dict=lstm_settings_dict, feature_size_dict=feature_size_dict,
+                              batch_size=train_batch_size, seq_length=sequence_length, prediction_length=prediction_length,
+                              embedding_info=embedding_info)
+        
+        model.weights_init(init_std)
+        
+        optimizer_list = []
+    
+        optimizer_list.append( optim.Adam( model.out.parameters(), lr=lr, weight_decay=l2_dict['out'] ) )
+        for embed_inf in embedding_info.keys():
+            if embedding_info[embed_inf]:
+                for embedder in embedding_info[embed_inf]:
+                    if embedder['embedding_use_func'] or (embedder['use_glove'] and not(lstm_settings_dict['freeze_glove'])):
+                        optimizer_list.append(
+                            optim.Adam( model.embedding_func.parameters(), lr=lr, weight_decay=l2_dict['emb'] )
+                                              )
+    
+        for lstm_key in model.lstm_dict.keys():
+            optimizer_list.append(optim.Adam(model.lstm_dict[lstm_key].parameters(), lr=lr, weight_decay=l2_dict[lstm_key]))
+    
+        
+        # save the result into a dictionary
+        results_save = dict()
+        results_save['train_losses'], results_save['test_losses'], results_save['indiv_perf'], results_save['accuracy_scores'],results_save[
+            'accuracy_evaluate'], results_save['acc_score_final'],results_save['max_acc'],results_save[
+                'min_acc'],results_save['true_vals'],results_save['predicted_vals']= [], [], [], [], [], [], [], [], [], []
+     
+        
+        # %% Training
+        for epoch in range(0, num_epochs):
+            # tell pytorch that you are training the model so that the settings would be different
+            model.train()
+            t_epoch_strt = t.time()
+            loss_list = []
+            model.change_batch_size_reset_states(train_batch_size)
+        
+            for batch_indx, batch in enumerate(train_dataloader):
+                # b should be of form: (x,x_i,v,v_i,y,info)
+                model.init_hidden()
+                model.zero_grad()
+                model_input = []
+        
+                # set model input here
+                
+                model_input_temp = batch['x'].transpose(1, 2).transpose(0, 1)
+                model_input = [model_input_temp,[],[],[]]
+                
+                #y = Variable(batch[4].type(dtype).transpose(0, 2).transpose(1, 2))
+                
+                model_output_logits = model(model_input)
+           
+                y = batch['y'].transpose(0, 1)
+                
+                loss = loss_func_BCE_Logit(model_output_logits,y.float())
+                loss_list.append(loss.cpu().data.numpy())
+                loss.backward()
+                
+                if grad_clip_bool:
+                    clip_grad_norm(model.parameters(), grad_clip)
+                
+                for opt in optimizer_list:
+                    opt.step()
+            
+            # stores the BCE loss func results
+            results_save['train_losses'].append(np.mean(loss_list))
+            
+            
+            # %% Test model
+            t_epoch_end = t.time()
+            model.eval()
+            results_save, test_input = test(model,test_dataset,validation_file_list,test_dataloader,results_save, test_results_length)
+            model.train()
+            t_total_end = t.time()
+            #        torch.save(model,)
+            print(
+                '{0} \t Val_loss: {1}\t Train_Loss: {2} \t Acc: {3} \t Acc_evaluate: {4}\t Train_time: {5} \t Val_time: {6} \t Total_time: {7}'.format(
+                    epoch + 1,
+                    np.round(results_save['test_losses'][-1], 4),
+                    np.round(np.float64(np.array(loss_list).mean()), 4),
+                    np.around(results_save['accuracy_scores'][-1], 4),
+                    np.around(results_save['accuracy_evaluate'][-1], 4),
+                    np.round(t_epoch_end - t_epoch_strt, 2),
+                    np.round(t_total_end - t_epoch_end, 2),
+                    np.round(t_total_end - t_epoch_strt, 2)))
+            
+            
+            
+            if (epoch + 1 > patience) and \
+                    (np.argmin(np.round(results_save['test_losses'], 4)) < (len(results_save['test_losses']) - patience)):
+                print('early stopping called at epoch: ' + str(epoch + 1))
+                break
+        
+        accuracy = max(results_save['accuracy_scores'])   
+        trial.report(accuracy, epoch)
+    
+        # Handle pruning based on the intermediate value.
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+        
+        return accuracy
 
 
-  
+    def run_tuned(file_list,modality):
+        para_results = {}
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=100, timeout=600)
+        pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+        complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+        print("Study statistics: ")
+        print("Number of finished trials: ", len(study.trials))
+        print("Number of pruned trials: ", len(pruned_trials))
+        print("Number of complete trials: ", len(complete_trials))
+        
+        print("Best trial:")
+        trial = study.best_trial
+        print("  Value: ", trial.value)
+        print("  Params: ")
+        for key, value in trial.params.items():
+            print("    {}: {}".format(key, value))
+            
+        # save the best combinations of parameters in the form of dictionary
+        para_results["Number of finished trials"] = len(study.trials)
+        para_results["Number of pruned trials"] = len(pruned_trials)
+        para_results["Number of complete trials"] = len(complete_trials)
+        param = trial.params
+        para_results.update(param)
+        
+        # LOSO cross-validation
+        # run the model with the selected parameters 
+        acc_max_lst = []
+        acc_min_lst = []
+        predicted_tot = []
+        true_tot = []
+        final_results = []
+        n = 0
+        for file in file_list:
+            # leave one speaker out cross validation
+            test_file_list = [file]
+            train_file_list = file_list.copy()
+            train_file_list.remove(file)
+            
+            print('Start running fold: ' + str(n))
+            
+            results,model = run_model(para_results,train_file_list, test_file_list,modality)
+            final_results.append(results)
+            
+            # get the highest accuracy score of test sets for each fold
+            acc_max_lst.append(max(results['accuracy_scores'][-(round(len(results['accuracy_scores'])/10)):]))
+            acc_min_lst.append(min(results['accuracy_scores'][-(round(len(results['accuracy_scores'])/10)):]))
+            true_tot.append(results['true_vals'])
+            predicted_tot.append(results['predicted_vals'])
+            
+            print('Finished running fold' + str(n))
+            n += 1
+        
+    
+    
+        # flatten the nested lists
+        true_vals_temp = [item for sublist in true_tot for item in sublist]
+        predicted_vals_temp = [item for sublist in predicted_tot for item in sublist]
+        true_vals = [item for sublist in true_vals_temp for item in sublist]
+        predicted_vals = [item for sublist in predicted_vals_temp for item in sublist]
+        acc_score_final = accuracy_score(true_vals, predicted_vals)
+        
+        # choose the structure/parameter information based on each fold's f-scores
+        max_acc = max(acc_max_lst) 
+        max_index = acc_max_lst.index(max_acc)
+        min_acc = min(acc_min_lst) 
+        results_save = final_results[max_index]
+        # save more results
+        results_save['acc_score_final'] = acc_score_final
+        results_save['max_acc'] = max_acc
+        results_save['min_acc'] = min_acc
+    
+        # save and plot final results
+        plot_results(results_save, model,modality)
+        return results_save
 
-
+    run_tuned(file_list,modality)
 
 
 
